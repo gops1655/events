@@ -1,0 +1,1 @@
+user|a:10:{s:2:"id";i:1;s:4:"name";s:13:"Administrator";s:5:"email";s:20:"admin@hospital.local";s:4:"role";s:5:"admin";s:10:"department";s:14:"Administration";s:11:"designation";s:5:"Admin";s:5:"phone";s:10:"9876500001";s:6:"avatar";N;s:9:"is_active";i:1;s:9:"unit_code";N;}
