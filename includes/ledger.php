@@ -459,6 +459,15 @@ function record_event_expense(int $eventId, array $post, ?string $billPath = nul
         }
         log_expense_change($expenseId, $eventId, 'update', $title . ' · ' . $amount . ' · ' . $approval);
         log_activity('expense.update', 'expense', $expenseId, $title);
+        if ($approval === 'pending' && $old['approval_status'] !== 'pending') {
+            notify('expense.pending', [
+                'event' => event_notify_context($eventId),
+                'title' => $title,
+                'amount' => $amount,
+                'entity_type' => 'expense',
+                'entity_id' => $expenseId,
+            ]);
+        }
         return $expenseId;
     }
 
@@ -487,6 +496,15 @@ function record_event_expense(int $eventId, array $post, ?string $billPath = nul
     $newId = (int) db()->lastInsertId();
     log_expense_change($newId, $eventId, 'create', strtoupper($type) . ' · ' . $title . ' · ' . $approval);
     log_activity('expense.create', 'event', $eventId, strtoupper($type) . ' · ' . $title);
+    if ($approval === 'pending') {
+        notify('expense.pending', [
+            'event' => event_notify_context($eventId),
+            'title' => $title,
+            'amount' => $amount,
+            'entity_type' => 'expense',
+            'entity_id' => $newId,
+        ]);
+    }
     return $newId;
 }
 
@@ -512,6 +530,14 @@ function approve_expense(int $eventId, int $expenseId): void
     db()->prepare("UPDATE expenses SET approval_status='approved', approved_by=?, approved_at=NOW() WHERE id=?")->execute([uid(), $expenseId]);
     log_expense_change($expenseId, $eventId, 'approve', $row['title'] . $note);
     log_activity('expense.approve', 'expense', $expenseId, $row['title']);
+    notify('expense.approved', [
+        'event' => event_notify_context($eventId),
+        'title' => $row['title'],
+        'amount' => (float) $row['amount'],
+        'requester_id' => (int) ($row['recorded_by'] ?? 0),
+        'entity_type' => 'expense',
+        'entity_id' => $expenseId,
+    ]);
 }
 
 function reject_expense(int $eventId, int $expenseId): void
@@ -528,6 +554,14 @@ function reject_expense(int $eventId, int $expenseId): void
     db()->prepare("UPDATE expenses SET approval_status='rejected' WHERE id=?")->execute([$expenseId]);
     log_expense_change($expenseId, $eventId, 'reject', $row['title']);
     log_activity('expense.reject', 'expense', $expenseId, $row['title']);
+    notify('expense.rejected', [
+        'event' => event_notify_context($eventId),
+        'title' => $row['title'],
+        'amount' => (float) $row['amount'],
+        'requester_id' => (int) ($row['recorded_by'] ?? 0),
+        'entity_type' => 'expense',
+        'entity_id' => $expenseId,
+    ]);
 }
 
 function cancel_expense(int $eventId, int $expenseId): void
@@ -597,6 +631,16 @@ function record_receipt(int $eventId, array $post): void
     ]);
     refresh_sponsorship_status($sid);
     log_activity('receipt.create', 'sponsorship', $sid, 'Receipt ' . $amount);
+    $newTotal = $already + $amount;
+    notify(($newTotal + 0.009 >= $promised) ? 'sponsorship.received' : 'sponsorship.partial', [
+        'event' => event_notify_context($eventId),
+        'sponsor_name' => sponsor_name_by_id((int) $sp['sponsor_id']),
+        'amount' => $amount,
+        'balance' => max(0, $promised - $newTotal),
+        'liaison_user_id' => (int) ($sp['liaison_user_id'] ?? 0),
+        'entity_type' => 'sponsorship',
+        'entity_id' => $sid,
+    ]);
 }
 
 function expense_import_headers(bool $withEventCode = false): array

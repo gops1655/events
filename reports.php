@@ -337,6 +337,64 @@ if (query('export') === 'csv') {
     exit;
 }
 
+$agingBuckets = ['Not yet due' => 0.0, '0–30d late' => 0.0, '31–60d late' => 0.0, '61–90d late' => 0.0, '90d+ late' => 0.0];
+$turnaround = null;
+$unitCompare = [];
+if ($eventIds) {
+    $in = implode(',', array_fill(0, count($eventIds), '?'));
+    $grace = collection_grace_days();
+    $st = $pdo->prepare(
+        "SELECT s.promised_amount, ev.end_date,
+                (s.promised_amount - COALESCE((SELECT SUM(r.amount) FROM sponsorship_receipts r WHERE r.sponsorship_id = s.id),0)) outstanding
+         FROM sponsorships s JOIN events ev ON ev.id = s.event_id
+         WHERE s.status IN ('promised','partial') AND s.event_id IN ({$in})"
+    );
+    $st->execute($eventIds);
+    foreach ($st->fetchAll() as $row) {
+        $outstanding = (float) $row['outstanding'];
+        if ($outstanding <= 0.009) {
+            continue;
+        }
+        $daysLate = (int) floor((time() - strtotime($row['end_date'] . " +{$grace} days")) / 86400);
+        if ($daysLate <= 0) {
+            $agingBuckets['Not yet due'] += $outstanding;
+        } elseif ($daysLate <= 30) {
+            $agingBuckets['0–30d late'] += $outstanding;
+        } elseif ($daysLate <= 60) {
+            $agingBuckets['31–60d late'] += $outstanding;
+        } elseif ($daysLate <= 90) {
+            $agingBuckets['61–90d late'] += $outstanding;
+        } else {
+            $agingBuckets['90d+ late'] += $outstanding;
+        }
+    }
+
+    $st = $pdo->prepare(
+        "SELECT AVG(TIMESTAMPDIFF(HOUR, created_at, approved_at)) avg_h, COUNT(*) n
+         FROM expenses WHERE event_id IN ({$in}) AND approval_status = 'approved' AND approved_at IS NOT NULL AND deleted_at IS NULL"
+    );
+    $st->execute($eventIds);
+    $tr = $st->fetch();
+    if ($tr && (int) $tr['n'] > 0) {
+        $turnaround = ['hours' => (float) $tr['avg_h'], 'n' => (int) $tr['n']];
+    }
+
+    if (can_see_all_units() && !active_unit_filter()) {
+        foreach ($rows as $r) {
+            $uc = $r['event']['unit_code'] ?? '—';
+            if (!isset($unitCompare[$uc])) {
+                $unitCompare[$uc] = ['promised' => 0.0, 'received' => 0.0, 'spend' => 0.0];
+            }
+            if (!$r['unsponsored']) {
+                $unitCompare[$uc]['promised'] += $r['promised'];
+                $unitCompare[$uc]['received'] += $r['received'];
+            }
+            $unitCompare[$uc]['spend'] += $r['spend'];
+        }
+        ksort($unitCompare);
+    }
+}
+
 $pageTitle = 'Reports';
 $pageCrumb = $scopeText . ' · ' . $periodLabel . (active_unit_filter() ? ' · ' . active_unit_filter() : '');
 $active = 'reports';
@@ -378,6 +436,39 @@ render_unit_pills('reports.php');
   <a class="btn btn-ghost" href="?<?= e($filterQs) ?>&export=csv">Plain CSV</a>
   <button class="btn btn-ghost" type="button" onclick="window.print()">Print / PDF</button>
 </form>
+
+<div class="grid-2 no-print" style="margin-bottom:16px">
+  <div class="card">
+    <div class="card-h"><h3>Collection aging</h3><span>Outstanding sponsorship, by how late it is</span></div>
+    <div class="card-b">
+      <?php if (array_sum($agingBuckets) <= 0.009): ?>
+        <p class="muted">Nothing outstanding in this selection.</p>
+      <?php else: ?>
+        <canvas id="agingChart" height="150"></canvas>
+      <?php endif; ?>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>Expense approval turnaround</h3><span>Time from booking to finance approval</span></div>
+    <div class="card-b">
+      <?php if (!$turnaround): ?>
+        <p class="muted">No approved expenses with a recorded approval time in this selection.</p>
+      <?php else: ?>
+        <div class="kpi ok" style="max-width:280px">
+          <div class="label">Average turnaround</div>
+          <div class="value"><?= $turnaround['hours'] < 48 ? round($turnaround['hours']) . ' hrs' : round($turnaround['hours'] / 24, 1) . ' days' ?></div>
+          <div class="hint">Across <?= $turnaround['n'] ?> approved expense<?= $turnaround['n'] === 1 ? '' : 's' ?></div>
+        </div>
+      <?php endif; ?>
+    </div>
+  </div>
+</div>
+<?php if ($unitCompare): ?>
+<div class="card no-print" style="margin-bottom:16px">
+  <div class="card-h"><h3>Unit comparison</h3><span>Promised, received and spend across units for this period</span></div>
+  <div class="card-b"><canvas id="unitCompareChart" height="110"></canvas></div>
+</div>
+<?php endif; ?>
 
 <div class="report-doc">
   <div class="report-head">
@@ -573,4 +664,32 @@ render_unit_pills('reports.php');
     </div>
   </div>
 </div>
+<?php if (array_sum($agingBuckets) > 0.009): ?>
+<script>
+new Chart(document.getElementById('agingChart'), {
+  type: 'bar',
+  data: {
+    labels: <?= json_encode(array_keys($agingBuckets)) ?>,
+    datasets: [{ data: <?= json_encode(array_values(array_map('floatval', $agingBuckets))) ?>, backgroundColor: ['#3a6ea5', '#c4892a', '#c45c4a', '#a83f2e', '#7a2a1e'], borderRadius: 8 }]
+  },
+  options: { plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => '₹' + Number(v).toLocaleString('en-IN') } } } }
+});
+</script>
+<?php endif; ?>
+<?php if ($unitCompare): ?>
+<script>
+new Chart(document.getElementById('unitCompareChart'), {
+  type: 'bar',
+  data: {
+    labels: <?= json_encode(array_keys($unitCompare)) ?>,
+    datasets: [
+      { label: 'Promised', data: <?= json_encode(array_column($unitCompare, 'promised')) ?>, backgroundColor: '#c4a35a', borderRadius: 6 },
+      { label: 'Received', data: <?= json_encode(array_column($unitCompare, 'received')) ?>, backgroundColor: '#2f7d5b', borderRadius: 6 },
+      { label: 'Spend', data: <?= json_encode(array_column($unitCompare, 'spend')) ?>, backgroundColor: '#1b6e64', borderRadius: 6 }
+    ]
+  },
+  options: { plugins: { legend: { position: 'bottom' } }, scales: { y: { ticks: { callback: v => '₹' + Number(v).toLocaleString('en-IN') } } } }
+});
+</script>
+<?php endif; ?>
 <?php require __DIR__ . '/includes/footer.php'; ?>

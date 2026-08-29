@@ -13,12 +13,17 @@ $u = current_user();
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Outfit:wght@400;500;560;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assets/css/app.css?v=17">
+  <link rel="stylesheet" href="assets/css/app.css?v=18">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>window.APP_CSRF = <?= json_encode(csrf_token()) ?>;</script>
 </head>
 <body>
 <div class="app">
-  <aside class="sidebar">
+  <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle menu">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <div class="sidebar-scrim" id="sidebarScrim"></div>
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="brand-mark">EG</div>
       <div>
@@ -97,11 +102,34 @@ $u = current_user();
         <div class="crumb"><?= e($pageCrumb) ?></div>
       </div>
       <div class="top-actions">
+        <button type="button" class="icon-btn" id="searchTrigger" aria-label="Search" title="Search (Ctrl/⌘ K)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </button>
+        <div class="notif-wrap">
+          <button type="button" class="icon-btn" id="notifTrigger" aria-label="Notifications">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6Z"/><path d="M9.5 21a2.5 2.5 0 0 0 5 0"/></svg>
+            <span class="notif-dot" id="notifDot" hidden></span>
+          </button>
+          <div class="notif-panel" id="notifPanel" hidden>
+            <div class="notif-panel-h">
+              <strong>Notifications</strong>
+              <button type="button" id="notifReadAll" class="link-btn">Mark all read</button>
+            </div>
+            <div class="notif-list" id="notifList"><div class="notif-empty">Loading…</div></div>
+          </div>
+        </div>
         <a class="btn btn-ghost btn-sm" href="help.php">Help</a>
         <a class="btn btn-ghost btn-sm" href="profile.php">Profile</a>
         <a class="btn btn-sm" href="logout.php">Sign out</a>
       </div>
     </header>
+    <div class="search-modal" id="searchModal" hidden>
+      <div class="search-box">
+        <input type="text" id="searchInput" placeholder="Search events, sponsors, expenses… " autocomplete="off">
+        <div class="search-results" id="searchResults"></div>
+        <div class="search-hint">↑↓ to move · Enter to open · Esc to close</div>
+      </div>
+    </div>
     <div class="content">
       <?php if ($m = flash('ok')): ?><div class="alert ok"><?= e($m) ?></div><?php endif; ?>
       <?php if ($m = flash('err')): ?><div class="alert err"><?= e($m) ?></div><?php endif; ?>

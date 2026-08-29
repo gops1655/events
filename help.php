@@ -179,6 +179,7 @@ if ($logged) {
   <a href="#matrix">Access chart</a>
   <a href="#money">Money rules</a>
   <a href="#screens">Screens</a>
+  <a href="#notifications">Notifications</a>
   <a href="#accounts">Demo logins</a>
 </nav>
 
@@ -339,6 +340,19 @@ if ($logged) {
       <div><strong>Activity</strong><span>Who changed what. Visible to every signed-in role.</span></div>
       <div><strong>Users / Settings</strong><span>Administrators only. Approval limit lives under Settings.</span></div>
     </div>
+  </div>
+</section>
+
+<section class="card" id="notifications" style="margin-bottom:16px">
+  <div class="card-h"><h3>Notifications</h3><span>Bell, email, WhatsApp — configured once by an administrator</span></div>
+  <div class="card-b">
+    <ul class="help-list">
+      <li>The bell in the top bar is always on for signed-in users — it shows sponsorship money, overdue collections, expense approvals, and event reminders as they happen.</li>
+      <li>Email and WhatsApp are optional. An administrator turns them on under <strong>Settings → Notifications</strong>, adds SMTP details (for email) and a provider (Meta Cloud API, Twilio, or a generic webhook, for WhatsApp), and can send a test message to check both work.</li>
+      <li>Each trigger — sponsorship promised/received, overdue collections, expense approvals, event reminders — can be switched on or off independently, and reminder timing (e.g. 7 and 1 day before an event) is configurable.</li>
+      <li>Overdue-collection digests, event-start reminders, and retrying any failed email/WhatsApp sends run from a scheduled job, not on every page load. Settings shows the exact command (or a token-protected URL, for hosts that only support URL-based cron) to schedule once a day.</li>
+      <li>Recipients are decided by role and by who is assigned to the event: the marketing lead and finance team hear about sponsorship money; finance and admins hear about expenses waiting for approval; the person who booked an expense hears back once it is approved or rejected; everyone assigned to an event (marketing, doctor, pharmacy, coordinator) gets its reminders.</li>
+    </ul>
   </div>
 </section>
 

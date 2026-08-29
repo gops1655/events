@@ -64,6 +64,42 @@ function money(float|int|string|null $amount): string
     return $n < 0 ? '−' . $formatted : $formatted;
 }
 
+function svg_sparkline(array $values, string $color, int $w = 108, int $h = 30): string
+{
+    $values = array_map('floatval', $values);
+    $n = count($values);
+    if ($n < 2) {
+        return '';
+    }
+    $min = min($values);
+    $max = max($values);
+    $range = $max - $min ?: 1.0;
+    $step = $w / ($n - 1);
+    $pts = [];
+    foreach ($values as $i => $v) {
+        $x = round($i * $step, 1);
+        $y = round($h - (($v - $min) / $range) * ($h - 4) - 2, 1);
+        $pts[] = $x . ',' . $y;
+    }
+    $last = $pts[count($pts) - 1];
+    return '<svg class="spark" viewBox="0 0 ' . $w . ' ' . $h . '" preserveAspectRatio="none" width="' . $w . '" height="' . $h . '">'
+        . '<polyline points="' . e(implode(' ', $pts)) . '" fill="none" stroke="' . e($color) . '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+        . '<circle cx="' . e(explode(',', $last)[0]) . '" cy="' . e(explode(',', $last)[1]) . '" r="2.6" fill="' . e($color) . '"/>'
+        . '</svg>';
+}
+
+function trend_delta(float $current, float $previous): ?array
+{
+    if (abs($previous) < 0.009 && abs($current) < 0.009) {
+        return null;
+    }
+    if (abs($previous) < 0.009) {
+        return ['pct' => null, 'up' => $current > 0, 'label' => $current > 0 ? 'new' : '—'];
+    }
+    $pct = ($current - $previous) / abs($previous) * 100;
+    return ['pct' => $pct, 'up' => $pct >= 0, 'label' => ($pct >= 0 ? '+' : '') . number_format($pct, 0) . '%'];
+}
+
 function money_dec(float|int|string|null $amount): string
 {
     $n = (float) $amount;
@@ -628,6 +664,67 @@ function ensure_schema(): void
     ensure_bootstrap_admin();
     ensure_default_categories();
     ensure_registrations_schema();
+    ensure_notifications_schema();
+}
+
+function ensure_notifications_schema(): void
+{
+    db()->exec("CREATE TABLE IF NOT EXISTS notifications (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id INT UNSIGNED DEFAULT NULL,
+        channel ENUM('inapp','email','whatsapp') NOT NULL DEFAULT 'inapp',
+        type VARCHAR(60) NOT NULL,
+        title VARCHAR(200) NOT NULL,
+        body TEXT,
+        entity_type VARCHAR(40) DEFAULT NULL,
+        entity_id INT UNSIGNED DEFAULT NULL,
+        recipient VARCHAR(190) DEFAULT NULL,
+        status ENUM('pending','sent','failed','skipped') NOT NULL DEFAULT 'pending',
+        attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        error TEXT,
+        read_at DATETIME DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        sent_at DATETIME DEFAULT NULL,
+        INDEX idx_notif_user (user_id, read_at),
+        INDEX idx_notif_status (channel, status),
+        INDEX idx_notif_dedupe (type, entity_type, entity_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    try {
+        db()->exec('ALTER TABLE notifications ADD CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE');
+    } catch (Throwable $e) {
+    }
+    $defaults = [
+        'notify_inapp_enabled' => '1',
+        'notify_email_enabled' => '0',
+        'notify_whatsapp_enabled' => '0',
+        'notify_on_sponsorship' => '1',
+        'notify_on_overdue' => '1',
+        'notify_on_expense_approval' => '1',
+        'notify_on_event_reminder' => '1',
+        'event_reminder_days' => '7,1',
+        'smtp_host' => '',
+        'smtp_port' => '587',
+        'smtp_encryption' => 'tls',
+        'smtp_user' => '',
+        'smtp_pass' => '',
+        'smtp_from_email' => '',
+        'smtp_from_name' => '',
+        'whatsapp_provider' => 'generic',
+        'whatsapp_endpoint' => '',
+        'whatsapp_token' => '',
+        'whatsapp_sid' => '',
+        'whatsapp_from' => '',
+        'app_base_url' => '',
+        'cron_secret' => bin2hex(random_bytes(12)),
+    ];
+    $chk = db()->prepare('SELECT 1 FROM settings WHERE setting_key = ?');
+    $ins = db()->prepare('INSERT INTO settings (setting_key, setting_value) VALUES (?,?)');
+    foreach ($defaults as $key => $value) {
+        $chk->execute([$key]);
+        if (!$chk->fetch()) {
+            $ins->execute([$key, $value]);
+        }
+    }
 }
 
 function default_expense_categories(): array
@@ -867,6 +964,14 @@ function link_sponsorship(array $data): int
     $id = (int) db()->lastInsertId();
     sync_sponsorship_target($eventId);
     log_activity('sponsorship.create', 'event', $eventId, 'Linked sponsor to ' . $event['title'] . ' for ' . $amount);
+    notify('sponsorship.promised', [
+        'event' => event_notify_context($eventId),
+        'sponsor_name' => sponsor_name_by_id($sponsorId),
+        'amount' => $amount,
+        'liaison_user_id' => !empty($data['liaison_user_id']) ? (int) $data['liaison_user_id'] : uid(),
+        'entity_type' => 'sponsorship',
+        'entity_id' => $id,
+    ]);
     return $id;
 }
 

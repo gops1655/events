@@ -212,4 +212,26 @@ CREATE TABLE IF NOT EXISTS settings (
   setting_value TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED DEFAULT NULL,
+  channel ENUM('inapp','email','whatsapp') NOT NULL DEFAULT 'inapp',
+  type VARCHAR(60) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  body TEXT,
+  entity_type VARCHAR(40) DEFAULT NULL,
+  entity_id INT UNSIGNED DEFAULT NULL,
+  recipient VARCHAR(190) DEFAULT NULL,
+  status ENUM('pending','sent','failed','skipped') NOT NULL DEFAULT 'pending',
+  attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  error TEXT,
+  read_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at DATETIME DEFAULT NULL,
+  INDEX idx_notif_user (user_id, read_at),
+  INDEX idx_notif_status (channel, status),
+  INDEX idx_notif_dedupe (type, entity_type, entity_id, created_at),
+  CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

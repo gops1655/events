@@ -463,7 +463,7 @@ if ($overAmt > 0.009):
 
 <?php render_expense_import_report(); ?>
 <?php render_registration_import_report(); ?>
-<div class="card" style="margin-bottom:16px">
+<div class="card" style="margin-bottom:16px" id="expenses">
   <div class="card-h">
     <h3>Expenses</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -628,7 +628,7 @@ if ($overAmt > 0.009):
 </div>
 <?php endif; ?>
 
-<div class="card">
+<div class="card" id="sponsorship">
   <div class="card-h">
     <h3><?= $unsponsored ? 'Sponsorship' : 'Linked sponsors' ?></h3>
     <span><?= $unsponsored ? 'Not applicable' : 'Promised ' . money($totals['promised']) . ' · Received ' . money($totals['received']) ?></span>

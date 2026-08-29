@@ -8,6 +8,37 @@ $unitParams = [];
 $ew = unit_where('e', $unitParams);
 $evw = $ew; // alias e for events
 
+$period = (string) query('period', 'all');
+if (!in_array($period, ['month', 'quarter', 'year', 'custom', 'all'], true)) {
+    $period = 'all';
+}
+$periodFrom = $periodTo = $prevFrom = $prevTo = null;
+if ($period === 'month') {
+    $periodFrom = date('Y-m-01');
+    $periodTo = date('Y-m-t');
+} elseif ($period === 'quarter') {
+    $qStartMonth = (int) (floor(((int) date('n') - 1) / 3) * 3) + 1;
+    $periodFrom = date('Y-' . str_pad((string) $qStartMonth, 2, '0', STR_PAD_LEFT) . '-01');
+    $periodTo = date('Y-m-t', strtotime($periodFrom . ' +2 months'));
+} elseif ($period === 'year') {
+    $periodFrom = date('Y-01-01');
+    $periodTo = date('Y-12-31');
+} elseif ($period === 'custom') {
+    $periodFrom = (string) query('from');
+    $periodTo = (string) query('to');
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodFrom) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodTo)) {
+        $period = 'all';
+        $periodFrom = $periodTo = null;
+    } elseif ($periodFrom > $periodTo) {
+        [$periodFrom, $periodTo] = [$periodTo, $periodFrom];
+    }
+}
+if ($periodFrom && $periodTo) {
+    $spanDays = (int) ((strtotime($periodTo) - strtotime($periodFrom)) / 86400) + 1;
+    $prevTo = date('Y-m-d', strtotime($periodFrom . ' -1 day'));
+    $prevFrom = date('Y-m-d', strtotime($prevTo . ' -' . ($spanDays - 1) . ' days'));
+}
+
 $eventsCount = (int) (function () use ($ew, $unitParams) {
     $st = db()->prepare("SELECT COUNT(*) FROM events e WHERE e.status <> 'cancelled'" . $ew);
     $st->execute($unitParams);
@@ -31,11 +62,21 @@ $unsponsoredN = (int) (function () use ($ew, $unitParams) {
 
 $expP = [];
 $expW = unit_where('ev', $expP);
-$st = $pdo->prepare("SELECT COALESCE(SUM(e.amount),0) FROM expenses e JOIN events ev ON ev.id = e.event_id WHERE e.deleted_at IS NULL AND e.approval_status = 'approved'" . $expW);
-$st->execute($expP);
+$periodExpSql = $periodFrom ? ' AND e.expense_date BETWEEN ? AND ?' : '';
+$periodPromSql = $periodFrom ? ' AND s.promised_date BETWEEN ? AND ?' : '';
+$periodRecvSql = $periodFrom ? ' AND r.received_date BETWEEN ? AND ?' : '';
+
+$st = $pdo->prepare("SELECT COALESCE(SUM(e.amount),0) FROM expenses e JOIN events ev ON ev.id = e.event_id WHERE e.deleted_at IS NULL AND e.approval_status = 'approved'" . $expW . $periodExpSql);
+$st->execute($periodFrom ? array_merge($expP, [$periodFrom, $periodTo]) : $expP);
 $expTotal = (float) $st->fetchColumn();
-$st = $pdo->prepare("SELECT e.booking_type, COALESCE(SUM(e.amount),0) total FROM expenses e JOIN events ev ON ev.id = e.event_id WHERE e.deleted_at IS NULL AND e.approval_status = 'approved'" . $expW . ' GROUP BY e.booking_type');
-$st->execute($expP);
+$expTotalPrev = 0.0;
+if ($prevFrom) {
+    $st->execute(array_merge($expP, [$prevFrom, $prevTo]));
+    $expTotalPrev = (float) $st->fetchColumn();
+}
+
+$st = $pdo->prepare("SELECT e.booking_type, COALESCE(SUM(e.amount),0) total FROM expenses e JOIN events ev ON ev.id = e.event_id WHERE e.deleted_at IS NULL AND e.approval_status = 'approved'" . $expW . $periodExpSql . ' GROUP BY e.booking_type');
+$st->execute($periodFrom ? array_merge($expP, [$periodFrom, $periodTo]) : $expP);
 $poTotal = $ecmTotal = 0.0;
 foreach ($st->fetchAll() as $row) {
     if (($row['booking_type'] ?? '') === 'ecm') {
@@ -48,14 +89,39 @@ $st = $pdo->prepare("SELECT COUNT(*) FROM expenses e JOIN events ev ON ev.id = e
 $st->execute($expP);
 $pendingExp = (int) $st->fetchColumn();
 
-$st = $pdo->prepare("SELECT COALESCE(SUM(s.promised_amount),0) FROM sponsorships s JOIN events ev ON ev.id = s.event_id WHERE s.status <> 'cancelled'" . $expW);
-$st->execute($expP);
+$st = $pdo->prepare("SELECT COALESCE(SUM(s.promised_amount),0) FROM sponsorships s JOIN events ev ON ev.id = s.event_id WHERE s.status <> 'cancelled'" . $expW . $periodPromSql);
+$st->execute($periodFrom ? array_merge($expP, [$periodFrom, $periodTo]) : $expP);
 $promised = (float) $st->fetchColumn();
-$st = $pdo->prepare("SELECT COALESCE(SUM(r.amount),0) FROM sponsorship_receipts r JOIN sponsorships s ON s.id = r.sponsorship_id JOIN events ev ON ev.id = s.event_id WHERE 1=1" . $expW);
-$st->execute($expP);
+$promisedPrev = 0.0;
+if ($prevFrom) {
+    $st->execute(array_merge($expP, [$prevFrom, $prevTo]));
+    $promisedPrev = (float) $st->fetchColumn();
+}
+
+$st = $pdo->prepare("SELECT COALESCE(SUM(r.amount),0) FROM sponsorship_receipts r JOIN sponsorships s ON s.id = r.sponsorship_id JOIN events ev ON ev.id = s.event_id WHERE 1=1" . $expW . $periodRecvSql);
+$st->execute($periodFrom ? array_merge($expP, [$periodFrom, $periodTo]) : $expP);
 $received = (float) $st->fetchColumn();
-$outstanding = max(0, $promised - $received);
+$receivedPrev = 0.0;
+if ($prevFrom) {
+    $st->execute(array_merge($expP, [$prevFrom, $prevTo]));
+    $receivedPrev = (float) $st->fetchColumn();
+}
+
+// Lifetime balance (never period-clipped) for the "still outstanding" hint.
+if ($periodFrom) {
+    $st = $pdo->prepare("SELECT COALESCE(SUM(s.promised_amount),0) FROM sponsorships s JOIN events ev ON ev.id = s.event_id WHERE s.status <> 'cancelled'" . $expW);
+    $st->execute($expP);
+    $promisedAll = (float) $st->fetchColumn();
+    $st = $pdo->prepare("SELECT COALESCE(SUM(r.amount),0) FROM sponsorship_receipts r JOIN sponsorships s ON s.id = r.sponsorship_id JOIN events ev ON ev.id = s.event_id WHERE 1=1" . $expW);
+    $st->execute($expP);
+    $receivedAll = (float) $st->fetchColumn();
+} else {
+    $promisedAll = $promised;
+    $receivedAll = $received;
+}
+$outstanding = max(0, $promisedAll - $receivedAll);
 $net = $received - $expTotal;
+$netPrev = $receivedPrev - $expTotalPrev;
 $overdue = overdue_collections();
 $overspent = overspent_events();
 
@@ -96,6 +162,7 @@ $byCat = $st->fetchAll();
 $months = [];
 $monthExp = [];
 $monthRecv = [];
+$monthProm = [];
 for ($i = 11; $i >= 0; $i--) {
     $start = date('Y-m-01', strtotime("-{$i} months"));
     $end = date('Y-m-t', strtotime($start));
@@ -108,7 +175,14 @@ for ($i = 11; $i >= 0; $i--) {
     $st = $pdo->prepare("SELECT COALESCE(SUM(r.amount),0) FROM sponsorship_receipts r JOIN sponsorships s ON s.id = r.sponsorship_id JOIN events ev ON ev.id = s.event_id WHERE r.received_date BETWEEN ? AND ?" . $expW);
     $st->execute($mp);
     $monthRecv[] = (float) $st->fetchColumn();
+    $st = $pdo->prepare("SELECT COALESCE(SUM(s.promised_amount),0) FROM sponsorships s JOIN events ev ON ev.id = s.event_id WHERE s.status <> 'cancelled' AND s.promised_date BETWEEN ? AND ?" . $expW);
+    $st->execute($mp);
+    $monthProm[] = (float) $st->fetchColumn();
 }
+$sparkExp = array_slice($monthExp, -6);
+$sparkRecv = array_slice($monthRecv, -6);
+$sparkProm = array_slice($monthProm, -6);
+$sparkNet = array_map(static fn ($r, $e) => $r - $e, $sparkRecv, $sparkExp);
 
 $st = $pdo->prepare(
     "SELECT e.*, c.name cat, ev.title event_title, ev.code, ev.unit_code
@@ -206,7 +280,35 @@ $pageCrumb = 'Good ' . (date('H') < 12 ? 'morning' : (date('H') < 17 ? 'afternoo
 $active = 'dashboard';
 require __DIR__ . '/includes/header.php';
 render_unit_pills('dashboard.php');
+
+function render_trend_badge(?array $delta): string
+{
+    if (!$delta) {
+        return '';
+    }
+    $cls = $delta['up'] ? 'up' : 'down';
+    $arrow = $delta['up'] ? '↑' : '↓';
+    return '<span class="trend-badge ' . $cls . '">' . $arrow . ' ' . e($delta['label']) . '</span>';
+}
+$periodLabels = ['all' => 'All time', 'month' => 'This month', 'quarter' => 'This quarter', 'year' => 'This year', 'custom' => 'Custom'];
 ?>
+
+<form class="filters period-filter" method="get" style="margin-bottom:14px">
+  <?php if (query('unit')): ?><input type="hidden" name="unit" value="<?= e((string) query('unit')) ?>"><?php endif; ?>
+  <?php if ($stage): ?><input type="hidden" name="stage" value="<?= e($stage) ?>"><?php endif; ?>
+  <div class="period-pills">
+    <?php foreach (['all' => 'All time', 'month' => 'This month', 'quarter' => 'This quarter', 'year' => 'This year'] as $k => $v): ?>
+      <a class="<?= $period === $k ? 'active' : '' ?>" href="?<?= e(http_build_query(array_merge($_GET, ['period' => $k, 'from' => null, 'to' => null]))) ?>"><?= e($v) ?></a>
+    <?php endforeach; ?>
+  </div>
+  <div class="period-custom">
+    <input type="date" name="from" value="<?= e($period === 'custom' ? (string) query('from') : '') ?>">
+    <span class="muted">to</span>
+    <input type="date" name="to" value="<?= e($period === 'custom' ? (string) query('to') : '') ?>">
+    <input type="hidden" name="period" value="custom">
+    <button class="btn btn-ghost btn-sm" type="submit">Apply</button>
+  </div>
+</form>
 
 <div class="kpis">
   <div class="kpi">
@@ -215,19 +317,19 @@ render_unit_pills('dashboard.php');
     <div class="hint"><?= $sponsoredN ?> with sponsors · <?= $seekingN ?> seeking · <?= $unsponsoredN ?> hospital-funded</div>
   </div>
   <div class="kpi brass">
-    <div class="label">Sponsorship promised</div>
-    <div class="value"><?= money($promised) ?></div>
-    <div class="hint"><?= money($received) ?> received</div>
+    <div class="label">Sponsorship promised <span class="muted" style="font-weight:400"><?= e($periodLabels[$period] ?? '') ?></span></div>
+    <div class="value-row"><div class="value"><?= money($promised) ?></div><?= svg_sparkline($sparkProm, '#c4a35a') ?></div>
+    <div class="hint"><?= money($received) ?> received <?= render_trend_badge($prevFrom ? trend_delta($promised, $promisedPrev) : null) ?></div>
   </div>
   <div class="kpi teal">
-    <div class="label">Expenses booked</div>
-    <div class="value"><?= money($expTotal) ?></div>
-    <div class="hint">Purchase <?= money($poTotal) ?> · ECM <?= money($ecmTotal) ?><?= $pendingExp ? ' · ' . $pendingExp . ' pending' : '' ?></div>
+    <div class="label">Expenses booked <span class="muted" style="font-weight:400"><?= e($periodLabels[$period] ?? '') ?></span></div>
+    <div class="value-row"><div class="value"><?= money($expTotal) ?></div><?= svg_sparkline($sparkExp, '#1b6e64') ?></div>
+    <div class="hint">Purchase <?= money($poTotal) ?> · ECM <?= money($ecmTotal) ?><?= $pendingExp ? ' · ' . $pendingExp . ' pending' : '' ?> <?= render_trend_badge($prevFrom ? trend_delta($expTotal, $expTotalPrev) : null) ?></div>
   </div>
   <div class="kpi <?= $net >= 0 ? 'ok' : 'coral' ?>">
-    <div class="label">Net (received − spend)</div>
-    <div class="value"><?= money($net) ?></div>
-    <div class="hint"><?= money($outstanding) ?> still outstanding</div>
+    <div class="label">Net (received − spend) <span class="muted" style="font-weight:400"><?= e($periodLabels[$period] ?? '') ?></span></div>
+    <div class="value-row"><div class="value"><?= money($net) ?></div><?= svg_sparkline($sparkNet, $net >= 0 ? '#2f7d5b' : '#c45c4a') ?></div>
+    <div class="hint"><?= money($outstanding) ?> still outstanding <?= render_trend_badge($prevFrom ? trend_delta($net, $netPrev) : null) ?></div>
   </div>
 </div>
 

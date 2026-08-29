@@ -29,7 +29,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 
 $installed = is_file(__DIR__ . '/config.php');
 $script = basename($_SERVER['SCRIPT_NAME'] ?? '');
-$publicScripts = ['index.php', 'install.php', 'logout.php', 'help.php', 'reset_admin.php'];
+$publicScripts = ['index.php', 'install.php', 'logout.php', 'help.php', 'reset_admin.php', 'cron.php'];
 
 if (!$installed && $script !== 'install.php') {
     header('Location: install.php');
@@ -43,6 +43,7 @@ if ($installed) {
     require_once __DIR__ . '/auth.php';
     require_once __DIR__ . '/ledger.php';
     require_once __DIR__ . '/registrations.php';
+    require_once __DIR__ . '/notifications.php';
     if ($script !== 'install.php') {
         try {
             ensure_schema();
